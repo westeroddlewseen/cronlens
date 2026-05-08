@@ -1,99 +1,105 @@
-"""Cron expression parser for cronlens.
+"""Cron expression parser with alias support."""
 
-Parses standard 5-field cron expressions into structured components
-and provides human-readable descriptions.
-"""
+from dataclasses import dataclass, field
+from typing import List, Optional
+from cronlens.aliases import resolve_alias, is_alias
 
-from dataclasses import dataclass
-from typing import Optional
-
-FIELD_NAMES = ["minute", "hour", "day_of_month", "month", "day_of_week"]
-FIELD_RANGES = {
-    "minute": (0, 59),
-    "hour": (0, 23),
-    "day_of_month": (1, 31),
-    "month": (1, 12),
-    "day_of_week": (0, 6),
+DAY_NAMES = {
+    "sun": 0, "mon": 1, "tue": 2, "wed": 3,
+    "thu": 4, "fri": 5, "sat": 6,
 }
-
 MONTH_NAMES = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4,
     "may": 5, "jun": 6, "jul": 7, "aug": 8,
     "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
 
-DAY_NAMES = {
-    "sun": 0, "mon": 1, "tue": 2, "wed": 3,
-    "thu": 4, "fri": 5, "sat": 6,
-}
+FIELD_RANGES = [
+    ("minute", 0, 59),
+    ("hour", 0, 23),
+    ("day_of_month", 1, 31),
+    ("month", 1, 12),
+    ("day_of_week", 0, 6),
+]
 
 
 @dataclass
 class CronField:
+    name: str
     raw: str
-    field: str
-    values: list[int]
+    values: List[int]
+    min_val: int
+    max_val: int
 
-    @property
-    def is_wildcard(self) -> bool:
-        return self.raw == "*"
+
+def is_wildcard(raw: str) -> bool:
+    return raw.strip() == "*"
+
+
+def _resolve_names(token: str, names: dict) -> str:
+    for name, val in names.items():
+        token = token.lower().replace(name, str(val))
+    return token
+
+
+def _expand_field(raw: str, min_val: int, max_val: int, names: Optional[dict] = None) -> List[int]:
+    values = set()
+    token = raw.strip()
+    if names:
+        token = _resolve_names(token, names)
+
+    for part in token.split(","):
+        if part == "*":
+            values.update(range(min_val, max_val + 1))
+        elif "/" in part:
+            base, step = part.split("/", 1)
+            step = int(step)
+            if base == "*":
+                start = min_val
+                end = max_val
+            elif "-" in base:
+                start, end = map(int, base.split("-", 1))
+            else:
+                start = int(base)
+                end = max_val
+            values.update(range(start, end + 1, step))
+        elif "-" in part:
+            start, end = map(int, part.split("-", 1))
+            values.update(range(start, end + 1))
+        else:
+            values.add(int(part))
+
+    return sorted(values)
 
 
 @dataclass
 class CronExpression:
     raw: str
-    minute: CronField
-    hour: CronField
-    day_of_month: CronField
-    month: CronField
-    day_of_week: CronField
+    resolved: str
+    fields: List[CronField]
+    from_alias: bool = False
 
-    @property
-    def fields(self) -> list[CronField]:
-        return [self.minute, self.hour, self.day_of_month, self.month, self.day_of_week]
-
-
-def _resolve_names(value: str, mapping: dict) -> str:
-    for name, num in mapping.items():
-        value = value.lower().replace(name, str(num))
-    return value
-
-
-def _parse_field(raw: str, field: str) -> CronField:
-    min_val, max_val = FIELD_RANGES[field]
-    name_map = MONTH_NAMES if field == "month" else (DAY_NAMES if field == "day_of_week" else {})
-    token = _resolve_names(raw, name_map)
-
-    values: list[int] = []
-
-    if token == "*":
-        values = list(range(min_val, max_val + 1))
-    elif "," in token:
-        for part in token.split(","):
-            values.extend(_parse_field(part, field).values)
-    elif "/" in token:
-        base, step = token.split("/", 1)
-        step = int(step)
-        base_field = _parse_field(base if base != "*" else f"{min_val}-{max_val}", field)
-        start = base_field.values[0]
-        values = list(range(start, max_val + 1, step))
-    elif "-" in token:
-        start, end = token.split("-", 1)
-        values = list(range(int(start), int(end) + 1))
-    else:
-        values = [int(token)]
-
-    if not all(min_val <= v <= max_val for v in values):
-        raise ValueError(f"Field '{field}' value out of range [{min_val}, {max_val}]: {raw}")
-
-    return CronField(raw=raw, field=field, values=sorted(set(values)))
+    def __getattr__(self, name: str) -> CronField:
+        for f in self.fields:
+            if f.name == name:
+                return f
+        raise AttributeError(f"No field: {name}")
 
 
 def parse(expression: str) -> CronExpression:
-    """Parse a 5-field cron expression string into a CronExpression object."""
-    parts = expression.strip().split()
-    if len(parts) != 5:
-        raise ValueError(f"Expected 5 fields, got {len(parts)}: '{expression}'")
+    """Parse a cron expression string (or alias) into a CronExpression."""
+    original = expression.strip()
+    from_alias = is_alias(original)
+    resolved = resolve_alias(original)
 
-    fields = {name: _parse_field(raw, name) for name, raw in zip(FIELD_NAMES, parts)}
-    return CronExpression(raw=expression, **fields)
+    parts = resolved.split()
+    if len(parts) != 5:
+        raise ValueError(f"Expected 5 fields, got {len(parts)}: {resolved!r}")
+
+    fields = []
+    name_maps = [None, None, None, MONTH_NAMES, DAY_NAMES]
+    for (fname, fmin, fmax), raw_part, names in zip(FIELD_RANGES, parts, name_maps):
+        vals = _expand_field(raw_part, fmin, fmax, names)
+        fields.append(CronField(name=fname, raw=raw_part, values=vals, min_val=fmin, max_val=fmax))
+
+    return CronExpression(raw=original, resolved=resolved, fields=fields, from_alias=from_alias)
