@@ -1,55 +1,68 @@
-"""Formats cron schedule information for CLI output."""
+"""Format cronlens output structures for terminal display."""
 
-from datetime import datetime
-from cronlens.parser import CronExpression
+from datetime import datetime, timezone
+from typing import List
+
 from cronlens.explainer import explain
-from cronlens.humanizer import humanize
-from cronlens.scheduler import CronScheduler
+from cronlens.parser import CronExpression
+from cronlens.ranker import CronRank, rank
 
 
 def format_explanation(expr: CronExpression) -> str:
-    """Format a detailed multi-line explanation of a cron expression."""
-    details = explain(expr)
+    """Return a formatted multi-line explanation of a cron expression."""
+    data = explain(expr)
     lines = [
-        f"  Minute       : {details['minute']}",
-        f"  Hour         : {details['hour']}",
-        f"  Day of Month : {details['day_of_month']}",
-        f"  Month        : {details['month']}",
-        f"  Day of Week  : {details['day_of_week']}",
+        f"Expression : {expr.expression}",
+        f"Summary    : {data['summary']}",
         "",
-        f"  Summary      : {details['summary']}",
+        "Fields:",
+    ]
+    for field, desc in data["fields"].items():
+        lines.append(f"  {field:<14} {desc}")
+    return "\n".join(lines)
+
+
+def format_next_runs(expr: CronExpression, n: int = 5, from_dt: datetime | None = None) -> str:
+    """Return a formatted list of upcoming run times with human-readable deltas."""
+    from cronlens.scheduler import CronScheduler
+
+    now = from_dt or datetime.now(timezone.utc)
+    scheduler = CronScheduler(expr)
+    runs = scheduler.next_runs(n, from_dt=now)
+
+    lines = [f"Next {n} runs (from {now.strftime('%Y-%m-%d %H:%M UTC')}):", ""]
+    for i, dt in enumerate(runs, 1):
+        delta = dt - now
+        total_seconds = int(delta.total_seconds())
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes = remainder // 60
+        delta_str = f"+{hours}h {minutes:02d}m" if hours else f"+{minutes}m"
+        lines.append(f"  {i}. {dt.strftime('%Y-%m-%d %H:%M UTC')}  ({delta_str})")
+    return "\n".join(lines)
+
+
+def format_rank(expr: CronExpression) -> str:
+    """Return a formatted rank summary for a cron expression."""
+    r: CronRank = rank(expr)
+    lines = [
+        f"Rank Summary for: {r.expression}",
+        f"  Label       : {r.label}",
+        f"  Frequency   : {r.frequency_score:.2f} runs/day",
+        f"  Regularity  : {r.regularity_score:.2%}",
+        f"  Complexity  : {r.complexity_score:.2%}",
+        f"  Overall     : {r.overall_score:.4f}",
     ]
     return "\n".join(lines)
 
 
-def format_next_runs(expr: CronExpression, from_dt: datetime, count: int = 5) -> str:
-    """Format the next N scheduled run times as a numbered list."""
-    scheduler = CronScheduler(expr)
-    runs = scheduler.next_runs(from_dt, count)
-    lines = [f"  Next {count} runs from {from_dt.strftime('%Y-%m-%d %H:%M')}:"]
-    for i, run in enumerate(runs, 1):
-        delta = run - from_dt
-        total_minutes = int(delta.total_seconds() // 60)
-        if total_minutes < 60:
-            delta_str = f"in {total_minutes}m"
-        elif total_minutes < 1440:
-            delta_str = f"in {total_minutes // 60}h {total_minutes % 60}m"
-        else:
-            delta_str = f"in {delta.days}d {(total_minutes % 1440) // 60}h"
-        lines.append(f"  {i:>2}. {run.strftime('%Y-%m-%d %H:%M')}  ({delta_str})")
-    return "\n".join(lines)
-
-
-def format_full_report(raw: str, from_dt: datetime, count: int = 5) -> str:
-    """Generate a full formatted report for a cron expression string."""
-    expr = CronExpression(raw)
+def format_full_report(expr: CronExpression, n: int = 5, from_dt: datetime | None = None) -> str:
+    """Return a complete report combining explanation, rank, and next runs."""
+    separator = "-" * 48
     sections = [
-        f"Cron Expression : {raw}",
-        f"Human Readable  : {humanize(expr)}",
-        "",
-        "Field Breakdown:",
         format_explanation(expr),
-        "",
-        format_next_runs(expr, from_dt, count),
+        separator,
+        format_rank(expr),
+        separator,
+        format_next_runs(expr, n=n, from_dt=from_dt),
     ]
     return "\n".join(sections)
