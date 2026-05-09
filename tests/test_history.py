@@ -1,81 +1,163 @@
-"""Tests for cronlens.history module."""
-
-from datetime import datetime, timedelta
+"""Tests for cronlens.history — execution window analysis."""
 
 import pytest
+from datetime import datetime, timezone
+from cronlens.history import ExecutionWindow, HistorySummary, analyze_history
+from cronlens.parser import CronExpression
 
-from cronlens.history import build_history, ExecutionWindow, HistorySummary
+
+def utc(*args):
+    """Convenience factory for UTC datetimes."""
+    return datetime(*args, tzinfo=timezone.utc)
 
 
-START = datetime(2024, 1, 1, 0, 0, 0)
-ONE_HOUR = timedelta(hours=1)
-ONE_DAY = timedelta(days=1)
-
+# ---------------------------------------------------------------------------
+# ExecutionWindow
+# ---------------------------------------------------------------------------
 
 def test_every_minute_one_hour_has_60_runs():
-    summary = build_history("* * * * *", START, START + ONE_HOUR)
-    assert summary.actual_count == 60
+    expr = CronExpression.parse("* * * * *")
+    window = ExecutionWindow(
+        expression=expr,
+        start=utc(2024, 1, 1, 0, 0),
+        end=utc(2024, 1, 1, 1, 0),
+    )
+    assert window.actual_count() == 60
 
 
 def test_every_minute_expected_matches_actual():
-    summary = build_history("* * * * *", START, START + ONE_HOUR)
-    assert summary.expected_count == summary.actual_count
+    expr = CronExpression.parse("* * * * *")
+    window = ExecutionWindow(
+        expression=expr,
+        start=utc(2024, 1, 1, 0, 0),
+        end=utc(2024, 1, 1, 1, 0),
+    )
+    assert window.actual_count() == window.expected_count()
 
 
 def test_hourly_one_day_has_24_runs():
-    summary = build_history("0 * * * *", START, START + ONE_DAY)
-    assert summary.actual_count == 24
+    expr = CronExpression.parse("0 * * * *")
+    window = ExecutionWindow(
+        expression=expr,
+        start=utc(2024, 1, 1, 0, 0),
+        end=utc(2024, 1, 2, 0, 0),
+    )
+    assert window.actual_count() == 24
 
 
 def test_daily_midnight_one_week():
-    end = START + timedelta(days=7)
-    summary = build_history("0 0 * * *", START, end)
-    assert summary.actual_count == 7
+    expr = CronExpression.parse("0 0 * * *")
+    window = ExecutionWindow(
+        expression=expr,
+        start=utc(2024, 1, 1, 0, 0),
+        end=utc(2024, 1, 8, 0, 0),
+    )
+    assert window.actual_count() == 7
 
 
 def test_first_and_last_run_are_set():
-    summary = build_history("0 * * * *", START, START + ONE_DAY)
-    assert summary.first_run is not None
-    assert summary.last_run is not None
-    assert summary.first_run < summary.last_run
+    expr = CronExpression.parse("0 9 * * *")
+    window = ExecutionWindow(
+        expression=expr,
+        start=utc(2024, 1, 1, 0, 0),
+        end=utc(2024, 1, 4, 0, 0),
+    )
+    runs = window.runs()
+    assert runs[0] == utc(2024, 1, 1, 9, 0)
+    assert runs[-1] == utc(2024, 1, 3, 9, 0)
+
+
+def test_duration_hours():
+    expr = CronExpression.parse("* * * * *")
+    window = ExecutionWindow(
+        expression=expr,
+        start=utc(2024, 1, 1, 0, 0),
+        end=utc(2024, 1, 1, 6, 0),
+    )
+    assert window.duration_hours() == 6.0
 
 
 def test_no_runs_in_empty_window():
-    # Window of zero duration
-    summary = build_history("* * * * *", START, START)
-    assert summary.actual_count == 0
-    assert summary.first_run is None
-    assert summary.last_run is None
+    expr = CronExpression.parse("0 0 * * *")
+    window = ExecutionWindow(
+        expression=expr,
+        start=utc(2024, 1, 1, 0, 1),
+        end=utc(2024, 1, 1, 23, 59),
+    )
+    assert window.actual_count() == 0
 
 
-def test_coverage_percent_full():
-    summary = build_history("* * * * *", START, START + ONE_HOUR)
-    assert summary.coverage_percent() == pytest.approx(100.0)
+# ---------------------------------------------------------------------------
+# HistorySummary
+# ---------------------------------------------------------------------------
+
+def test_history_summary_missed_runs():
+    expr = CronExpression.parse("* * * * *")
+    window = ExecutionWindow(
+        expression=expr,
+        start=utc(2024, 1, 1, 0, 0),
+        end=utc(2024, 1, 1, 1, 0),
+    )
+    # Simulate 10 missed runs
+    summary = HistorySummary(window=window, observed=50)
+    assert summary.missed() == 10
 
 
-def test_coverage_percent_zero_when_no_expected():
-    summary = build_history("* * * * *", START, START)
-    assert summary.coverage_percent() == 0.0
+def test_history_summary_no_missed_runs():
+    expr = CronExpression.parse("0 * * * *")
+    window = ExecutionWindow(
+        expression=expr,
+        start=utc(2024, 1, 1, 0, 0),
+        end=utc(2024, 1, 2, 0, 0),
+    )
+    summary = HistorySummary(window=window, observed=24)
+    assert summary.missed() == 0
 
 
-def test_expression_stored_on_summary():
-    expr = "30 9 * * 1-5"
-    summary = build_history(expr, START, START + ONE_DAY)
-    assert summary.expression == expr
+def test_history_summary_reliability_full():
+    expr = CronExpression.parse("0 * * * *")
+    window = ExecutionWindow(
+        expression=expr,
+        start=utc(2024, 1, 1, 0, 0),
+        end=utc(2024, 1, 2, 0, 0),
+    )
+    summary = HistorySummary(window=window, observed=24)
+    assert summary.reliability() == 1.0
 
 
-def test_execution_window_duration_hours():
-    window = ExecutionWindow(start=START, end=START + ONE_HOUR, expected=60)
-    assert window.duration_hours == pytest.approx(1.0)
+def test_history_summary_reliability_partial():
+    expr = CronExpression.parse("* * * * *")
+    window = ExecutionWindow(
+        expression=expr,
+        start=utc(2024, 1, 1, 0, 0),
+        end=utc(2024, 1, 1, 1, 0),
+    )
+    summary = HistorySummary(window=window, observed=30)
+    assert abs(summary.reliability() - 0.5) < 1e-9
 
 
-def test_count_limit_caps_results():
-    summary = build_history("* * * * *", START, START + timedelta(days=1), count_limit=10)
-    assert summary.actual_count == 10
+# ---------------------------------------------------------------------------
+# analyze_history helper
+# ---------------------------------------------------------------------------
+
+def test_analyze_history_returns_summary():
+    summary = analyze_history(
+        expression="0 9 * * 1-5",
+        start=utc(2024, 1, 1, 0, 0),  # Monday
+        end=utc(2024, 1, 8, 0, 0),
+        observed=5,
+    )
+    assert isinstance(summary, HistorySummary)
+    assert summary.missed() == 0
 
 
-def test_runs_are_within_window():
-    end = START + ONE_HOUR
-    summary = build_history("* * * * *", START, end)
-    for run in summary.run_times:
-        assert START <= run < end
+def test_analyze_history_string_expression():
+    """analyze_history should accept a raw cron string."""
+    summary = analyze_history(
+        expression="*/5 * * * *",
+        start=utc(2024, 1, 1, 0, 0),
+        end=utc(2024, 1, 1, 1, 0),
+        observed=12,
+    )
+    assert summary.window.actual_count() == 12
+    assert summary.missed() == 0
