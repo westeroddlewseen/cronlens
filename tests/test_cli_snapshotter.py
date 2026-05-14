@@ -15,6 +15,18 @@ class FakeArgs:
         self.__dict__.update(kwargs)
 
 
+def make_snapshot(tmp_path, name, exprs, fname):
+    """Helper to create and persist a CronSnapshot for use in tests."""
+    snap = CronSnapshot(
+        name=name,
+        expressions=exprs,
+        captured_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    )
+    path = str(tmp_path / fname)
+    save_snapshot(snap, path)
+    return path
+
+
 def test_format_diff_no_changes():
     diff = SnapshotDiff(added=[], removed=[], unchanged=["* * * * *"])
     output = format_diff(diff)
@@ -47,24 +59,24 @@ def test_cmd_snapshot_save_creates_file(tmp_path, capsys):
 
 
 def test_cmd_snapshot_diff_prints_summary(tmp_path, capsys):
-    def make(name, exprs, fname):
-        snap = CronSnapshot(
-            name=name,
-            expressions=exprs,
-            captured_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        )
-        path = str(tmp_path / fname)
-        save_snapshot(snap, path)
-        return path
-
-    before_path = make("v1", ["* * * * *"], "before.json")
-    after_path = make("v2", ["* * * * *", "0 9 * * 1"], "after.json")
+    before_path = make_snapshot(tmp_path, "v1", ["* * * * *"], "before.json")
+    after_path = make_snapshot(tmp_path, "v2", ["* * * * *", "0 9 * * 1"], "after.json")
     args = FakeArgs(before=before_path, after=after_path)
     cmd_snapshot_diff(args)
     captured = capsys.readouterr()
     assert "v1" in captured.out
     assert "v2" in captured.out
     assert "+1 added" in captured.out
+
+
+def test_cmd_snapshot_diff_no_changes(tmp_path, capsys):
+    """Diffing identical snapshots should report no changes."""
+    before_path = make_snapshot(tmp_path, "v1", ["* * * * *"], "before.json")
+    after_path = make_snapshot(tmp_path, "v1", ["* * * * *"], "after.json")
+    args = FakeArgs(before=before_path, after=after_path)
+    cmd_snapshot_diff(args)
+    captured = capsys.readouterr()
+    assert "No changes" in captured.out
 
 
 def test_cmd_snapshot_diff_missing_file_exits(tmp_path):
