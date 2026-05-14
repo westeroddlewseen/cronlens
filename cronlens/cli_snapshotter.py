@@ -31,6 +31,9 @@ def format_diff(diff) -> str:
 
 def cmd_snapshot_save(args: argparse.Namespace) -> None:
     expressions = [e.strip() for e in args.expressions if e.strip()]
+    if not expressions:
+        print("Error: no valid expressions provided.", file=sys.stderr)
+        sys.exit(1)
     snapshot = CronSnapshot(
         name=args.name,
         expressions=expressions,
@@ -47,11 +50,14 @@ def cmd_snapshot_diff(args: argparse.Namespace) -> None:
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+    except ValueError as e:
+        print(f"Error: invalid snapshot file — {e}", file=sys.stderr)
+        sys.exit(1)
 
     diff = diff_snapshots(before, after)
     ts_before = before.captured_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     ts_after = after.captured_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    print(f"Comparing '{before.name}' ({ts_before}) → '{after.name}' ({ts_after})")
+    print(f"Comparing '{before.name}' ({ts_before}) \u2192 '{after.name}' ({ts_after})")
     print(format_diff(diff))
 
 
